@@ -12,7 +12,8 @@ REPORT_STATIC_TEXT = (
     "基金申购限额日报A类时间可申购不可申购纳斯达克100标普500其他"
     "不限暂停开放申购赎回定投转换转入转出交易状态限额单日累计购买"
     "上限金额人民币元万元千万亿元大额恢复关闭封闭认购未知"
-    "费率摘要名称价差信息运作费率运作费用管理托管销售服务优惠银行卡活期宝合计每年"
+    "费率摘要名称价差信息跟踪表现跟踪误差运作费率运作费用管理托管销售服务优惠银行卡活期宝合计每年"
+    "年化同类平均指标"
     "持有天年月日以上以内不足满获取失败小于大于等于"
     "华夏博时华安嘉实建信大成招商华宝华泰天弘摩根南方易方达"
     "广发国泰精选股票发起式指数联接ETFLOF"
@@ -22,7 +23,14 @@ REPORT_STATIC_TEXT = (
 )
 
 INDEX_TABLE_TITLES = ("纳斯达克100", "标普500")
-TABLE_HEADERS = ("名称", "价差信息", "运作费率", "申购优惠", "赎回费率")
+TABLE_HEADERS = (
+    "名称",
+    "价差信息",
+    "跟踪表现",
+    "运作费率",
+    "申购优惠",
+    "赎回费率",
+)
 
 
 def build_font_subset_text(config):
@@ -200,12 +208,16 @@ def _build_table_row(fund, availability, fee):
     return {
         "name": f"{fund.get('name') or fund.get('short_name') or ''}({code})",
         "spread": _spread_display(fund, availability),
+        "tracking": _tracking_display(fund, fee),
         "operation": _operation_fee_display(operation),
         "subscription": _subscription_fee_display(subscription),
         "redemption": _redemption_fee_display(redemption),
         "availability": availability,
         "change_direction": fund.get("change_direction", ""),
         "fee_error": bool(fee_error),
+        "tracking_error": bool(
+            fee.get("tracking_fetch_error") or fund.get("tracking_fetch_error", "")
+        ),
     }
 
 
@@ -216,6 +228,16 @@ def _spread_display(fund, availability):
     if detail == availability:
         return availability
     return f"{availability}\n{detail}"
+
+
+def _tracking_display(fund, fee):
+    tracking_error = fee.get("tracking_fetch_error") or fund.get(
+        "tracking_fetch_error",
+        "",
+    )
+    if tracking_error:
+        return tracking_error
+    return fee.get("tracking_display") or fund.get("tracking_display") or "--"
 
 
 def _operation_fee_display(value):
@@ -359,16 +381,22 @@ def _measure_table_row(draw, fonts, row, table_width):
 
 
 def _table_columns(table_width):
-    name_width = 260
-    spread_width = 190
-    operation_width = 330
-    subscription_width = 180
+    name_width = 250
+    spread_width = 170
+    tracking_width = 185
+    operation_width = 270
+    subscription_width = 160
     redemption_width = table_width - (
-        name_width + spread_width + operation_width + subscription_width
+        name_width
+        + spread_width
+        + tracking_width
+        + operation_width
+        + subscription_width
     )
     return [
         name_width,
         spread_width,
+        tracking_width,
         operation_width,
         subscription_width,
         redemption_width,
@@ -379,6 +407,7 @@ def _table_values(row):
     return [
         row["name"],
         row["spread"],
+        row["tracking"],
         row["operation"],
         row["subscription"],
         row["redemption"],
@@ -392,7 +421,9 @@ def _table_cell_fill(row, index):
         if row["change_direction"] == "decrease":
             return "#b91c1c"
         return "#15803d" if row["availability"] == "可申购" else "#b91c1c"
-    if index == 2 and row["fee_error"]:
+    if index == 2 and row["tracking_error"]:
+        return "#b91c1c"
+    if index == 3 and row["fee_error"]:
         return "#b91c1c"
     return "#111827" if index == 0 else "#475569"
 
