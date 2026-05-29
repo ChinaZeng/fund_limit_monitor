@@ -19,7 +19,7 @@ class FundMonitor:
     REPORT_TITLE = "基金申购限额日报 (A类)"
     INVESTMENT_PLAN_TITLE = "纳指100定投计划"
     INVESTMENT_PLAN_TARGET_INDEX = "纳斯达克100"
-    INVESTMENT_PLAN_AMOUNT = 100
+    DEFAULT_INVESTMENT_PLAN_AMOUNT = 100
     REQUEST_HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -673,7 +673,7 @@ class FundMonitor:
         }
 
     def _build_investment_plan(self, funds_data):
-        amount = self.INVESTMENT_PLAN_AMOUNT
+        amount = self._investment_plan_amount()
         remaining = amount
         rows = []
 
@@ -694,7 +694,7 @@ class FundMonitor:
             if remaining <= 0:
                 break
 
-            limit_amount = self._investment_limit_amount(fund)
+            limit_amount = self._investment_limit_amount(fund, amount)
             if limit_amount <= 0:
                 continue
 
@@ -730,6 +730,22 @@ class FundMonitor:
             "rows": rows,
         }
 
+    def _investment_plan_amount(self):
+        value = getattr(self, "config", {}).get(
+            "investment_plan_amount",
+            self.DEFAULT_INVESTMENT_PLAN_AMOUNT,
+        )
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            amount = self.DEFAULT_INVESTMENT_PLAN_AMOUNT
+
+        if amount <= 0:
+            amount = float(self.DEFAULT_INVESTMENT_PLAN_AMOUNT)
+        if amount.is_integer():
+            return int(amount)
+        return amount
+
     def _is_investment_candidate(self, fund):
         status = fund.get("status", "")
         limit_val = fund.get("limit_val")
@@ -740,10 +756,10 @@ class FundMonitor:
             return None
         return self._parse_percent(fund.get("tracking_error_display"))
 
-    def _investment_limit_amount(self, fund):
+    def _investment_limit_amount(self, fund, plan_amount):
         limit_val = fund.get("limit_val")
         if limit_val == float("inf"):
-            return self.INVESTMENT_PLAN_AMOUNT
+            return plan_amount
         return limit_val
 
     def _investment_limit_display(self, fund):

@@ -435,6 +435,38 @@ class FundMonitorInvestmentPlanTest(unittest.TestCase):
             ],
         )
 
+    def test_investment_plan_amount_comes_from_config(self):
+        self.monitor.config = {"investment_plan_amount": 80}
+
+        report = self.monitor.build_report(
+            [
+                fund(
+                    "000834",
+                    "50元",
+                    50,
+                    name="大成纳斯达克100ETF联接A",
+                    tracking_error="1.03%",
+                ),
+                fund(
+                    "016452",
+                    "200元",
+                    200,
+                    name="南方纳斯达克100指数A",
+                    tracking_error="1.42%",
+                ),
+            ],
+            generated_at="2026-05-29 13:30:00",
+        )
+
+        rows = report["investment_plan"]["rows"]
+
+        self.assertEqual(report["investment_plan"]["target_display"], "80元")
+        self.assertEqual(report["investment_plan"]["remaining_display"], "0元")
+        self.assertEqual(
+            [(row["code"], row["amount_display"]) for row in rows],
+            [("000834", "50元"), ("016452", "30元")],
+        )
+
     def test_markdown_includes_investment_plan_table(self):
         report = self.monitor.build_report(
             [
