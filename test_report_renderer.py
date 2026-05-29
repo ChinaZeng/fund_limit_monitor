@@ -78,6 +78,8 @@ class ReportRendererTest(unittest.TestCase):
                             "subscription_display": "<100万元 0.13%",
                             "redemption_display": "<7天 1.50% / >=2年 0.00%",
                             "fee_error": "",
+                            "tracking_display": "年化1.11% / 同类2.01% / 05-28",
+                            "tracking_fetch_error": "",
                         }
                     ],
                 },
@@ -92,6 +94,8 @@ class ReportRendererTest(unittest.TestCase):
                             "subscription_display": "",
                             "redemption_display": "",
                             "fee_error": "费率获取失败",
+                            "tracking_display": "",
+                            "tracking_fetch_error": "跟踪误差获取失败",
                         }
                     ],
                 },
@@ -127,6 +131,10 @@ class ReportRendererTest(unittest.TestCase):
         )
         self.assertEqual(tables[0]["rows"][0]["spread"], "可申购\n100元 -> 500元 ↑")
         self.assertEqual(
+            tables[0]["rows"][0]["tracking"],
+            "年化1.11% / 同类2.01% / 05-28",
+        )
+        self.assertEqual(
             tables[0]["rows"][0]["operation"],
             "管理0.80% 托管0.20%\n销售0.00% 合计1.00%/年",
         )
@@ -136,6 +144,8 @@ class ReportRendererTest(unittest.TestCase):
             "<7天 1.50%\n>=2年 0.00%",
         )
         self.assertEqual(tables[1]["rows"][0]["spread"], "不可申购\n暂停申购")
+        self.assertEqual(tables[1]["rows"][0]["tracking"], "跟踪误差获取失败")
+        self.assertTrue(tables[1]["rows"][0]["tracking_error"])
         self.assertEqual(tables[1]["rows"][0]["operation"], "费率获取失败")
         self.assertEqual(tables[1]["rows"][0]["subscription"], "--")
 

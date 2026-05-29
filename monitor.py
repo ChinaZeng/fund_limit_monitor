@@ -361,6 +361,19 @@ class FundMonitor:
             print(f"Error fetching fee info for {code}: {e}")
             return self._fee_error_info()
 
+    def fetch_fund_tracking_info(self, code):
+        url = f"https://fundf10.eastmoney.com/tsdata_{code}.html"
+
+        try:
+            resp = requests.get(url, headers=self.REQUEST_HEADERS, timeout=10)
+            if resp.status_code >= 400:
+                raise ValueError(f"HTTP {resp.status_code}")
+            resp.encoding = "utf-8"
+            return self._parse_tracking_info_html(resp.text)
+        except Exception as e:
+            print(f"Error fetching tracking info for {code}: {e}")
+            return self._tracking_error_info()
+
     def _parse_fee_info_html(self, html):
         soup = BeautifulSoup(html, "html.parser")
         operation_display = self._parse_operation_fee(soup)
@@ -384,6 +397,72 @@ class FundMonitor:
             "redemption_display": "",
             "fee_error": "费率获取失败",
         }
+
+    def _parse_tracking_info_html(self, html):
+        soup = BeautifulSoup(html, "html.parser")
+        box = soup.select_one("#jjzsfj")
+        if not box:
+            return self._tracking_empty_info()
+
+        table = box.select_one("table.fxtb") or box.find("table")
+        rows = self._table_rows(table)
+        if len(rows) < 2 or len(rows[1]) < 3:
+            raise ValueError("Incomplete tracking data")
+
+        tracking_index = rows[1][0]
+        tracking_error = rows[1][1]
+        tracking_peer_error = rows[1][2]
+        tracking_date = self._parse_tracking_date(box)
+
+        return {
+            "tracking_index": tracking_index,
+            "tracking_error_display": tracking_error,
+            "tracking_peer_error_display": tracking_peer_error,
+            "tracking_date": tracking_date,
+            "tracking_display": self._tracking_display(
+                tracking_error,
+                tracking_peer_error,
+                tracking_date,
+            ),
+            "tracking_fetch_error": "",
+        }
+
+    def _tracking_empty_info(self):
+        return {
+            "tracking_index": "",
+            "tracking_error_display": "",
+            "tracking_peer_error_display": "",
+            "tracking_date": "",
+            "tracking_display": "",
+            "tracking_fetch_error": "",
+        }
+
+    def _tracking_error_info(self):
+        info = self._tracking_empty_info()
+        info["tracking_fetch_error"] = "跟踪误差获取失败"
+        info["tracking_display"] = info["tracking_fetch_error"]
+        return info
+
+    def _parse_tracking_date(self, box):
+        date_el = box.select_one(".limit-time")
+        if not date_el:
+            return ""
+
+        match = re.search(r"\d{4}-\d{2}-\d{2}", date_el.get_text(" ", strip=True))
+        return match.group(0) if match else ""
+
+    def _tracking_display(self, tracking_error, tracking_peer_error, tracking_date):
+        if not tracking_error and not tracking_peer_error and not tracking_date:
+            return ""
+
+        parts = []
+        if tracking_error:
+            parts.append(f"年化{tracking_error}")
+        if tracking_peer_error:
+            parts.append(f"同类{tracking_peer_error}")
+        if tracking_date:
+            parts.append(tracking_date[5:])
+        return " / ".join(parts)
 
     def _parse_operation_fee(self, soup):
         table = self._find_fee_table(soup, "运作费用")
@@ -649,16 +728,18 @@ class FundMonitor:
         grouped = {"纳斯达克100": [], "标普500": [], "其他": []}
 
         for fund in funds_data:
-            has_fee_info = any(
+            has_summary_info = any(
                 fund.get(key)
                 for key in [
                     "operation_display",
                     "subscription_display",
                     "redemption_display",
                     "fee_error",
+                    "tracking_display",
+                    "tracking_fetch_error",
                 ]
             )
-            if not has_fee_info:
+            if not has_summary_info:
                 continue
 
             idx_type = self._get_index_type(fund["name"])
@@ -681,6 +762,15 @@ class FundMonitor:
             "subscription_display": fund.get("subscription_display", ""),
             "redemption_display": fund.get("redemption_display", ""),
             "fee_error": fund.get("fee_error", ""),
+            "tracking_index": fund.get("tracking_index", ""),
+            "tracking_error_display": fund.get("tracking_error_display", ""),
+            "tracking_peer_error_display": fund.get(
+                "tracking_peer_error_display",
+                "",
+            ),
+            "tracking_date": fund.get("tracking_date", ""),
+            "tracking_display": fund.get("tracking_display", ""),
+            "tracking_fetch_error": fund.get("tracking_fetch_error", ""),
         }
 
     def render_report_markdown(self, report):
@@ -704,8 +794,10 @@ class FundMonitor:
             report_lines.append("## 费率摘要")
             for group in fee_groups:
                 report_lines.append(f"### {group['title']}")
-                report_lines.append("| 基金 | 运作费用 | 申购优惠 | 赎回费率 |")
-                report_lines.append("| --- | --- | --- | --- |")
+                report_lines.append(
+                    "| 基金 | 跟踪表现 | 运作费用 | 申购优惠 | 赎回费率 |"
+                )
+                report_lines.append("| --- | --- | --- | --- | --- |")
                 for fund in group["funds"]:
                     if fund.get("fee_error"):
                         operation = fund["fee_error"]
@@ -721,6 +813,11 @@ class FundMonitor:
                             [
                                 self._markdown_table_cell(
                                     f"{fund['short_name']}({fund['code']})"
+                                ),
+                                self._markdown_table_cell(
+                                    fund.get("tracking_fetch_error")
+                                    or fund.get("tracking_display")
+                                    or "--"
                                 ),
                                 self._markdown_table_cell(operation),
                                 self._markdown_table_cell(subscription),
@@ -746,6 +843,7 @@ class FundMonitor:
         for fund in self.funds_config:
             info = self.fetch_fund_info(fund["code"], fund["name"])
             info.update(self.fetch_fund_fee_info(fund["code"]))
+            info.update(self.fetch_fund_tracking_info(fund["code"]))
             funds_data.append(info)
             time.sleep(0.5)
 

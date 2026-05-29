@@ -49,6 +49,28 @@ FEE_HTML = """
 </html>
 """
 
+TRACKING_HTML = """
+<html>
+  <body>
+    <div id="jjzsfj" class="box nb">
+      <table class="fxtb">
+        <tr>
+          <th>跟踪指数</th>
+          <th>年化跟踪误差</th>
+          <th>同类平均跟踪误差</th>
+        </tr>
+        <tr>
+          <td>纳斯达克100指数</td>
+          <td>1.11%</td>
+          <td>2.01%</td>
+        </tr>
+      </table>
+      <div class="limit-time">截止至：2026-05-28</div>
+    </div>
+  </body>
+</html>
+"""
+
 
 def make_monitor(history_db_path=None):
     monitor = object.__new__(FundMonitor)
@@ -220,7 +242,7 @@ class FundMonitorFeeTest(unittest.TestCase):
         self.assertEqual(fee_info["fee_error"], "费率获取失败")
         self.assertEqual(fee_info["operation_display"], "")
 
-    def test_markdown_includes_independent_fee_summary_section(self):
+    def test_markdown_includes_fee_and_tracking_summary_section(self):
         funds_data = [
             {
                 "code": "270042",
@@ -232,6 +254,8 @@ class FundMonitorFeeTest(unittest.TestCase):
                 "subscription_display": "<100万元 0.13%",
                 "redemption_display": "<7天 1.50% / >=2年 0.00%",
                 "fee_error": "",
+                "tracking_display": "年化1.11% / 同类2.01% / 05-28",
+                "tracking_fetch_error": "",
             },
             {
                 "code": "161125",
@@ -240,6 +264,8 @@ class FundMonitorFeeTest(unittest.TestCase):
                 "limit_text": "None",
                 "limit_val": -1,
                 "fee_error": "费率获取失败",
+                "tracking_display": "",
+                "tracking_fetch_error": "跟踪误差获取失败",
             },
         ]
 
@@ -251,15 +277,85 @@ class FundMonitorFeeTest(unittest.TestCase):
 
         self.assertIn("## 费率摘要", markdown)
         self.assertIn(
-            "| 基金 | 运作费用 | 申购优惠 | 赎回费率 |",
+            "| 基金 | 跟踪表现 | 运作费用 | 申购优惠 | 赎回费率 |",
             markdown,
         )
         self.assertIn(
-            "| 广发纳指100(270042) | 管理0.80% 托管0.20% 销售0.00% 合计1.00%/年 | "
+            "| 广发纳指100(270042) | 年化1.11% / 同类2.01% / 05-28 | "
+            "管理0.80% 托管0.20% 销售0.00% 合计1.00%/年 | "
             "<100万元 0.13% | <7天 1.50% / >=2年 0.00% |",
             markdown,
         )
-        self.assertIn("| 易方达标普500(161125) | 费率获取失败 | -- | -- |", markdown)
+        self.assertIn(
+            "| 易方达标普500(161125) | 跟踪误差获取失败 | 费率获取失败 | -- | -- |",
+            markdown,
+        )
+
+
+class FundMonitorTrackingTest(unittest.TestCase):
+    def setUp(self):
+        self.monitor = make_monitor()
+
+    def test_parse_tracking_info_from_eastmoney_index_metrics(self):
+        tracking_info = self.monitor._parse_tracking_info_html(TRACKING_HTML)
+
+        self.assertEqual(tracking_info["tracking_index"], "纳斯达克100指数")
+        self.assertEqual(tracking_info["tracking_error_display"], "1.11%")
+        self.assertEqual(tracking_info["tracking_peer_error_display"], "2.01%")
+        self.assertEqual(tracking_info["tracking_date"], "2026-05-28")
+        self.assertEqual(
+            tracking_info["tracking_display"],
+            "年化1.11% / 同类2.01% / 05-28",
+        )
+        self.assertEqual(tracking_info["tracking_fetch_error"], "")
+
+    def test_missing_tracking_metrics_are_empty_without_error(self):
+        tracking_info = self.monitor._parse_tracking_info_html("<html></html>")
+
+        self.assertEqual(tracking_info["tracking_display"], "")
+        self.assertEqual(tracking_info["tracking_fetch_error"], "")
+
+    @patch("monitor.requests.get", side_effect=Exception("network down"))
+    def test_fetch_tracking_failure_returns_error_without_raising(self, _get):
+        tracking_info = self.monitor.fetch_fund_tracking_info("270042")
+
+        self.assertEqual(
+            tracking_info["tracking_fetch_error"],
+            "跟踪误差获取失败",
+        )
+        self.assertEqual(tracking_info["tracking_display"], "跟踪误差获取失败")
+
+    def test_fetch_all_funds_merges_tracking_info(self):
+        self.monitor.funds_config = [
+            {"code": "270042", "name": "广发纳斯达克100ETF联接A"}
+        ]
+
+        with patch.object(
+            self.monitor,
+            "fetch_fund_info",
+            return_value=fund(
+                "270042",
+                "100元",
+                100,
+                name="广发纳斯达克100ETF联接A",
+            ),
+        ), patch.object(
+            self.monitor,
+            "fetch_fund_fee_info",
+            return_value={"fee_error": ""},
+        ), patch.object(
+            self.monitor,
+            "fetch_fund_tracking_info",
+            return_value={"tracking_display": "年化1.11% / 同类2.01% / 05-28"},
+        ), patch(
+            "monitor.time.sleep"
+        ):
+            funds_data = self.monitor.fetch_all_funds()
+
+        self.assertEqual(
+            funds_data[0]["tracking_display"],
+            "年化1.11% / 同类2.01% / 05-28",
+        )
 
 
 if __name__ == "__main__":
