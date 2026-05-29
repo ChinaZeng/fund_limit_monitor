@@ -17,6 +17,9 @@ class FundMonitor:
     CONFIG_FILE = "config.json"
     HISTORY_DB_FILE = "history.db"
     REPORT_TITLE = "基金申购限额日报 (A类)"
+    INVESTMENT_PLAN_TITLE = "纳指100定投计划"
+    INVESTMENT_PLAN_TARGET_INDEX = "纳斯达克100"
+    INVESTMENT_PLAN_AMOUNT = 100
     REQUEST_HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -664,9 +667,90 @@ class FundMonitor:
         return {
             "title": self.REPORT_TITLE,
             "generated_at": generated_at,
+            "investment_plan": self._build_investment_plan(funds_data),
             "sections": sections,
             "fee_groups": self._build_fee_groups(funds_data),
         }
+
+    def _build_investment_plan(self, funds_data):
+        amount = self.INVESTMENT_PLAN_AMOUNT
+        remaining = amount
+        rows = []
+
+        candidates = []
+        for fund in funds_data:
+            if self._get_index_type(fund["name"]) != self.INVESTMENT_PLAN_TARGET_INDEX:
+                continue
+            if not self._is_investment_candidate(fund):
+                continue
+
+            tracking_value = self._tracking_error_value(fund)
+            if tracking_value is None:
+                continue
+
+            candidates.append((tracking_value, str(fund["code"]), fund))
+
+        for tracking_value, _, fund in sorted(candidates):
+            if remaining <= 0:
+                break
+
+            limit_amount = self._investment_limit_amount(fund)
+            if limit_amount <= 0:
+                continue
+
+            allocation = min(remaining, limit_amount)
+            rows.append(
+                {
+                    "order": len(rows) + 1,
+                    "code": fund["code"],
+                    "name": fund["name"],
+                    "short_name": self._shorten_name(fund["name"]),
+                    "tracking_error_value": tracking_value,
+                    "tracking_error_display": fund.get(
+                        "tracking_error_display",
+                        "",
+                    ),
+                    "tracking_display": fund.get("tracking_display", ""),
+                    "tracking_date": fund.get("tracking_date", ""),
+                    "limit_display": self._investment_limit_display(fund),
+                    "amount": allocation,
+                    "amount_display": self._format_limit_value(allocation),
+                }
+            )
+            remaining -= allocation
+
+        return {
+            "title": self.INVESTMENT_PLAN_TITLE,
+            "target_index": self.INVESTMENT_PLAN_TARGET_INDEX,
+            "target_amount": amount,
+            "target_display": self._format_limit_value(amount),
+            "remaining_amount": remaining,
+            "remaining_display": self._format_limit_value(remaining),
+            "sort_note": "按年化跟踪误差从低到高，结合当日申购限额分配",
+            "rows": rows,
+        }
+
+    def _is_investment_candidate(self, fund):
+        status = fund.get("status", "")
+        limit_val = fund.get("limit_val")
+        return "暂停" not in status and limit_val is not None and limit_val > 0
+
+    def _tracking_error_value(self, fund):
+        if fund.get("tracking_fetch_error"):
+            return None
+        return self._parse_percent(fund.get("tracking_error_display"))
+
+    def _investment_limit_amount(self, fund):
+        limit_val = fund.get("limit_val")
+        if limit_val == float("inf"):
+            return self.INVESTMENT_PLAN_AMOUNT
+        return limit_val
+
+    def _investment_limit_display(self, fund):
+        limit_text = fund.get("limit_text")
+        if limit_text and limit_text != "None":
+            return str(limit_text)
+        return self._format_limit_value(fund.get("limit_val"))
 
     def _build_report_section(self, title, grouped_funds, last_limits):
         total_count = sum(len(v) for v in grouped_funds.values())
@@ -775,6 +859,39 @@ class FundMonitor:
 
     def render_report_markdown(self, report):
         report_lines = ["# " + report["title"], f"> 时间: {report['generated_at']}"]
+
+        investment_plan = report.get("investment_plan")
+        if investment_plan:
+            report_lines.append(f"## {investment_plan['title']}")
+            report_lines.append(
+                "> "
+                f"目标: {investment_plan['target_display']}；"
+                f"剩余: {investment_plan['remaining_display']}；"
+                f"{investment_plan['sort_note']}"
+            )
+            report_lines.append("| 顺序 | 基金 | 年化跟踪误差 | 单日限额 | 今日定投 |")
+            report_lines.append("| --- | --- | --- | --- | --- |")
+            if investment_plan["rows"]:
+                for row in investment_plan["rows"]:
+                    report_lines.append(
+                        "| "
+                        + " | ".join(
+                            [
+                                str(row["order"]),
+                                self._markdown_table_cell(
+                                    f"{row['short_name']}({row['code']})"
+                                ),
+                                self._markdown_table_cell(
+                                    row["tracking_error_display"] or "--"
+                                ),
+                                self._markdown_table_cell(row["limit_display"]),
+                                self._markdown_table_cell(row["amount_display"]),
+                            ]
+                        )
+                        + " |"
+                    )
+            else:
+                report_lines.append("| -- | 暂无可执行计划 | -- | -- | -- |")
 
         for section in report["sections"]:
             report_lines.append(f"## {section['title']}")
