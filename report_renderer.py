@@ -14,6 +14,7 @@ REPORT_STATIC_TEXT = (
     "上限金额人民币元万元千万亿元大额恢复关闭封闭认购未知"
     "费率摘要名称价差信息跟踪表现跟踪误差运作费率运作费用管理托管销售服务优惠银行卡活期宝合计每年"
     "年化同类平均指标定投计划目标剩余额度顺序今日执行分配优先"
+    "策略变更强提醒较上期发生变化请按新计划执行"
     "持有天年月日以上以内不足满获取失败小于大于等于"
     "华夏博时华安嘉实建信大成招商华宝华泰天弘摩根南方易方达"
     "广发国泰精选股票发起式指数联接ETFLOF"
@@ -349,21 +350,29 @@ def _investment_plan_rows(plan):
 
 
 def _draw_investment_plan(draw, fonts, plan, x, y, table_width):
+    title_fill = "#b91c1c" if plan.get("changed") else "#172033"
     draw.text(
         (x, y),
-        plan.get("title", "纳指100定投计划"),
-        fill="#172033",
+        plan.get("display_title") or plan.get("title", "纳指100定投计划"),
+        fill=title_fill,
         font=fonts["table_title"],
     )
-    summary = (
-        f"目标: {plan.get('target_display', '--')} / "
-        f"剩余: {plan.get('remaining_display', '--')}"
-    )
+    if plan.get("changed"):
+        summary = (
+            f"【强提醒】策略变更 / "
+            f"目标: {plan.get('target_display', '--')} / "
+            f"剩余: {plan.get('remaining_display', '--')}"
+        )
+    else:
+        summary = (
+            f"目标: {plan.get('target_display', '--')} / "
+            f"剩余: {plan.get('remaining_display', '--')}"
+        )
     summary_width = _text_width(draw, summary, fonts["summary"])
     draw.text(
         (x + table_width - summary_width, y + 8),
         summary,
-        fill="#64748b",
+        fill="#b91c1c" if plan.get("changed") else "#64748b",
         font=fonts["summary"],
     )
     y += 44

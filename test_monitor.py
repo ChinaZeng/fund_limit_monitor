@@ -122,15 +122,23 @@ class FundMonitorHistoryTest(unittest.TestCase):
             make_monitor(db_path)
 
             with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
+                limit_row = conn.execute(
                     """
                     SELECT name
                     FROM sqlite_master
                     WHERE type = 'table' AND name = 'fund_limit_history'
                     """
                 ).fetchone()
+                plan_row = conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = 'fund_investment_plan_history'
+                    """
+                ).fetchone()
 
-            self.assertEqual(row[0], "fund_limit_history")
+            self.assertEqual(limit_row[0], "fund_limit_history")
+            self.assertEqual(plan_row[0], "fund_investment_plan_history")
 
     def test_save_history_upserts_one_row_per_day(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -423,6 +431,11 @@ class FundMonitorInvestmentPlanTest(unittest.TestCase):
 
         rows = report["investment_plan"]["rows"]
 
+        self.assertFalse(report["investment_plan"]["changed"])
+        self.assertEqual(
+            report["investment_plan"]["display_title"],
+            "纳指100定投计划",
+        )
         self.assertEqual(report["investment_plan"]["target_display"], "100元")
         self.assertEqual(report["investment_plan"]["remaining_display"], "0元")
         self.assertEqual(
@@ -467,6 +480,80 @@ class FundMonitorInvestmentPlanTest(unittest.TestCase):
             [("000834", "50元"), ("016452", "30元")],
         )
 
+    def test_investment_plan_change_compares_order_code_and_amount(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monitor = make_monitor(Path(tmpdir) / "history.db")
+            old_funds = [
+                fund(
+                    "000834",
+                    "50元",
+                    50,
+                    name="大成纳斯达克100ETF联接A",
+                    tracking_error="1.03%",
+                ),
+                fund(
+                    "040046",
+                    "10元",
+                    10,
+                    name="华安纳斯达克100ETF联接A",
+                    tracking_error="1.05%",
+                ),
+                fund(
+                    "270042",
+                    "10元",
+                    10,
+                    name="广发纳斯达克100ETF联接A",
+                    tracking_error="1.11%",
+                ),
+                fund(
+                    "016452",
+                    "200元",
+                    200,
+                    name="南方纳斯达克100指数A",
+                    tracking_error="1.42%",
+                ),
+            ]
+            old_report = monitor.build_report(
+                old_funds,
+                generated_at="2026-05-28 13:30:00",
+            )
+            monitor._save_history(
+                "2026-05-28",
+                old_funds,
+                old_report["investment_plan"],
+            )
+
+            unchanged_report = monitor.build_report(
+                old_funds,
+                generated_at="2026-05-29 13:30:00",
+            )
+            changed_report = monitor.build_report(
+                [
+                    old_funds[0],
+                    fund(
+                        "040046",
+                        "5元",
+                        5,
+                        name="华安纳斯达克100ETF联接A",
+                        tracking_error="1.05%",
+                    ),
+                    old_funds[2],
+                    old_funds[3],
+                ],
+                generated_at="2026-05-29 13:30:00",
+            )
+
+        self.assertFalse(unchanged_report["investment_plan"]["changed"])
+        self.assertTrue(changed_report["investment_plan"]["changed"])
+        self.assertEqual(
+            changed_report["investment_plan"]["display_title"],
+            "纳指100定投计划【策略变更】",
+        )
+        self.assertEqual(
+            changed_report["investment_plan"]["change_notice"],
+            "【强提醒】定投策略较上期发生变化，请按新计划执行。",
+        )
+
     def test_markdown_includes_investment_plan_table(self):
         report = self.monitor.build_report(
             [
@@ -494,6 +581,30 @@ class FundMonitorInvestmentPlanTest(unittest.TestCase):
         self.assertIn("| 顺序 | 基金 | 年化跟踪误差 | 单日限额 | 今日定投 |", markdown)
         self.assertIn("| 1 | 大成纳指100(000834) | 1.03% | 50元 | 50元 |", markdown)
         self.assertIn("| 2 | 南方纳指100(016452) | 1.42% | 200元 | 50元 |", markdown)
+
+    def test_markdown_warns_when_investment_plan_changes(self):
+        report = self.monitor.build_report(
+            [
+                fund(
+                    "000834",
+                    "50元",
+                    50,
+                    name="大成纳斯达克100ETF联接A",
+                    tracking_error="1.03%",
+                )
+            ],
+            generated_at="2026-05-29 13:30:00",
+        )
+        report["investment_plan"]["changed"] = True
+        report["investment_plan"]["display_title"] = "纳指100定投计划【策略变更】"
+        report["investment_plan"]["change_notice"] = (
+            "【强提醒】定投策略较上期发生变化，请按新计划执行。"
+        )
+
+        markdown = self.monitor.render_report_markdown(report)
+
+        self.assertIn("## 纳指100定投计划【策略变更】", markdown)
+        self.assertIn("【强提醒】定投策略较上期发生变化，请按新计划执行。", markdown)
 
 
 if __name__ == "__main__":

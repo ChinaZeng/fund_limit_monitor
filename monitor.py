@@ -71,6 +71,16 @@ class FundMonitor:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fund_investment_plan_history (
+                    date TEXT PRIMARY KEY,
+                    plan_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
     def _load_previous_history_limits(self, report_date):
         db_path = getattr(self, "history_db_path", None)
@@ -105,7 +115,40 @@ class FundMonitor:
 
         return limits if isinstance(limits, dict) else {}
 
-    def _save_history(self, report_date, funds_data):
+    def _load_previous_investment_plan(self, report_date):
+        db_path = getattr(self, "history_db_path", None)
+        if not db_path:
+            return None
+
+        try:
+            self._init_history_db()
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT plan_json
+                    FROM fund_investment_plan_history
+                    WHERE date <= ?
+                    ORDER BY date DESC
+                    LIMIT 1
+                    """,
+                    (report_date,),
+                ).fetchone()
+        except sqlite3.Error as e:
+            print(f"Error loading investment plan history database: {e}")
+            return None
+
+        if not row:
+            return None
+
+        try:
+            plan = json.loads(row[0])
+        except json.JSONDecodeError as e:
+            print(f"Error parsing investment plan history record: {e}")
+            return None
+
+        return plan if isinstance(plan, dict) else None
+
+    def _save_history(self, report_date, funds_data, investment_plan=None):
         db_path = getattr(self, "history_db_path", None)
         if not db_path:
             return
@@ -127,6 +170,32 @@ class FundMonitor:
                 """,
                 (report_date, limits_json, now, now),
             )
+
+        if investment_plan:
+            self._save_investment_plan_history(report_date, investment_plan, now)
+
+    def _save_investment_plan_history(self, report_date, investment_plan, now):
+        plan = self._build_investment_history_entry(investment_plan)
+        plan_json = json.dumps(plan, ensure_ascii=False, sort_keys=True)
+
+        with sqlite3.connect(self.history_db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO fund_investment_plan_history
+                    (date, plan_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    plan_json = excluded.plan_json,
+                    updated_at = excluded.updated_at
+                """,
+                (report_date, plan_json, now, now),
+            )
+
+    def _build_investment_history_entry(self, investment_plan):
+        return {
+            "target_amount": investment_plan.get("target_amount"),
+            "strategy": self._investment_plan_signature(investment_plan),
+        }
 
     def _build_history_limits(self, funds_data):
         return {
@@ -657,6 +726,7 @@ class FundMonitor:
             groups[category][group_name].append(info)
 
         last_limits = self._load_previous_history_limits(report_date)
+        previous_investment_plan = self._load_previous_investment_plan(report_date)
         sections = []
 
         for title in ["可申购", "不可申购"]:
@@ -667,12 +737,15 @@ class FundMonitor:
         return {
             "title": self.REPORT_TITLE,
             "generated_at": generated_at,
-            "investment_plan": self._build_investment_plan(funds_data),
+            "investment_plan": self._build_investment_plan(
+                funds_data,
+                previous_investment_plan,
+            ),
             "sections": sections,
             "fee_groups": self._build_fee_groups(funds_data),
         }
 
-    def _build_investment_plan(self, funds_data):
+    def _build_investment_plan(self, funds_data, previous_plan=None):
         amount = self._investment_plan_amount()
         remaining = amount
         rows = []
@@ -719,7 +792,7 @@ class FundMonitor:
             )
             remaining -= allocation
 
-        return {
+        plan = {
             "title": self.INVESTMENT_PLAN_TITLE,
             "target_index": self.INVESTMENT_PLAN_TARGET_INDEX,
             "target_amount": amount,
@@ -729,6 +802,55 @@ class FundMonitor:
             "sort_note": "按年化跟踪误差从低到高，结合当日申购限额分配",
             "rows": rows,
         }
+        changed = self._investment_plan_changed(plan, previous_plan)
+        plan.update(
+            {
+                "changed": changed,
+                "display_title": self._investment_plan_title(changed),
+                "change_notice": self._investment_change_notice(changed),
+            }
+        )
+        return plan
+
+    def _investment_plan_signature(self, investment_plan):
+        return [
+            {
+                "order": row.get("order"),
+                "code": str(row.get("code", "")),
+                "amount": self._normalize_investment_amount(row.get("amount")),
+            }
+            for row in investment_plan.get("rows", [])
+        ]
+
+    def _investment_plan_changed(self, current_plan, previous_plan):
+        if not previous_plan:
+            return False
+
+        previous_strategy = previous_plan.get("strategy")
+        if not isinstance(previous_strategy, list):
+            return False
+
+        return self._investment_plan_signature(current_plan) != previous_strategy
+
+    def _normalize_investment_amount(self, amount):
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            return amount
+
+        if amount.is_integer():
+            return int(amount)
+        return amount
+
+    def _investment_plan_title(self, changed):
+        if changed:
+            return f"{self.INVESTMENT_PLAN_TITLE}【策略变更】"
+        return self.INVESTMENT_PLAN_TITLE
+
+    def _investment_change_notice(self, changed):
+        if not changed:
+            return ""
+        return "【强提醒】定投策略较上期发生变化，请按新计划执行。"
 
     def _investment_plan_amount(self):
         value = getattr(self, "config", {}).get(
@@ -878,7 +1000,11 @@ class FundMonitor:
 
         investment_plan = report.get("investment_plan")
         if investment_plan:
-            report_lines.append(f"## {investment_plan['title']}")
+            report_lines.append(
+                f"## {investment_plan.get('display_title') or investment_plan['title']}"
+            )
+            if investment_plan.get("change_notice"):
+                report_lines.append(f"> {investment_plan['change_notice']}")
             report_lines.append(
                 "> "
                 f"目标: {investment_plan['target_display']}；"
@@ -1002,7 +1128,11 @@ class FundMonitor:
         if report_output:
             self._save_json(report_output, payload)
 
-        self._save_history(report["generated_at"][:10], funds_data)
+        self._save_history(
+            report["generated_at"][:10],
+            funds_data,
+            report.get("investment_plan"),
+        )
         return payload
 
     def send_report_payload(self, report_file):
