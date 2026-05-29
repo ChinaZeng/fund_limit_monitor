@@ -86,14 +86,24 @@ def fund(
     limit_val,
     status="开放申购",
     name=None,
+    tracking_error=None,
 ):
-    return {
+    data = {
         "code": code,
         "name": name or f"测试基金{code}A",
         "status": status,
         "limit_text": limit_text,
         "limit_val": limit_val,
     }
+    if tracking_error:
+        data.update(
+            {
+                "tracking_error_display": tracking_error,
+                "tracking_display": f"年化{tracking_error} / 同类2.01% / 05-28",
+                "tracking_date": "2026-05-28",
+            }
+        )
+    return data
 
 
 def flattened_report_funds(report):
@@ -356,6 +366,102 @@ class FundMonitorTrackingTest(unittest.TestCase):
             funds_data[0]["tracking_display"],
             "年化1.11% / 同类2.01% / 05-28",
         )
+
+
+class FundMonitorInvestmentPlanTest(unittest.TestCase):
+    def setUp(self):
+        self.monitor = make_monitor()
+
+    def test_investment_plan_allocates_by_tracking_error_and_limit(self):
+        report = self.monitor.build_report(
+            [
+                fund(
+                    "000834",
+                    "50元",
+                    50,
+                    name="大成纳斯达克100ETF联接A",
+                    tracking_error="1.03%",
+                ),
+                fund(
+                    "040046",
+                    "10元",
+                    10,
+                    name="华安纳斯达克100ETF联接A",
+                    tracking_error="1.05%",
+                ),
+                fund(
+                    "270042",
+                    "10元",
+                    10,
+                    name="广发纳斯达克100ETF联接A",
+                    tracking_error="1.11%",
+                ),
+                fund(
+                    "016452",
+                    "200元",
+                    200,
+                    name="南方纳斯达克100指数A",
+                    tracking_error="1.42%",
+                ),
+                fund(
+                    "160213",
+                    "100元",
+                    -1,
+                    status="暂停申购",
+                    name="国泰纳斯达克100(LOF)",
+                    tracking_error="1.00%",
+                ),
+                fund(
+                    "017436",
+                    "5000元",
+                    5000,
+                    name="华宝纳斯达克精选股票发起式A",
+                ),
+            ],
+            generated_at="2026-05-29 13:30:00",
+        )
+
+        rows = report["investment_plan"]["rows"]
+
+        self.assertEqual(report["investment_plan"]["target_display"], "100元")
+        self.assertEqual(report["investment_plan"]["remaining_display"], "0元")
+        self.assertEqual(
+            [(row["code"], row["amount_display"]) for row in rows],
+            [
+                ("000834", "50元"),
+                ("040046", "10元"),
+                ("270042", "10元"),
+                ("016452", "30元"),
+            ],
+        )
+
+    def test_markdown_includes_investment_plan_table(self):
+        report = self.monitor.build_report(
+            [
+                fund(
+                    "000834",
+                    "50元",
+                    50,
+                    name="大成纳斯达克100ETF联接A",
+                    tracking_error="1.03%",
+                ),
+                fund(
+                    "016452",
+                    "200元",
+                    200,
+                    name="南方纳斯达克100指数A",
+                    tracking_error="1.42%",
+                ),
+            ],
+            generated_at="2026-05-29 13:30:00",
+        )
+
+        markdown = self.monitor.render_report_markdown(report)
+
+        self.assertIn("## 纳指100定投计划", markdown)
+        self.assertIn("| 顺序 | 基金 | 年化跟踪误差 | 单日限额 | 今日定投 |", markdown)
+        self.assertIn("| 1 | 大成纳指100(000834) | 1.03% | 50元 | 50元 |", markdown)
+        self.assertIn("| 2 | 南方纳指100(016452) | 1.42% | 200元 | 50元 |", markdown)
 
 
 if __name__ == "__main__":

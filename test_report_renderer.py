@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 from report_renderer import (
     DEFAULT_FONT_PATH,
     _build_index_tables,
+    _investment_plan_rows,
     _wrap_text,
     build_font_subset_text,
     render_report_image,
@@ -24,6 +25,39 @@ class ReportRendererTest(unittest.TestCase):
         return {
             "title": "基金申购限额日报 (A类)",
             "generated_at": "2026-05-07 13:30:00",
+            "investment_plan": {
+                "title": "纳指100定投计划",
+                "target_index": "纳斯达克100",
+                "target_amount": 100,
+                "target_display": "100元",
+                "remaining_amount": 0,
+                "remaining_display": "0元",
+                "sort_note": "按年化跟踪误差从低到高，结合当日申购限额分配",
+                "rows": [
+                    {
+                        "order": 1,
+                        "code": "000834",
+                        "name": "大成纳斯达克100ETF联接A",
+                        "short_name": "大成纳指100",
+                        "tracking_error_display": "1.03%",
+                        "tracking_display": "年化1.03% / 同类2.01% / 05-28",
+                        "limit_display": "50元",
+                        "amount": 50,
+                        "amount_display": "50元",
+                    },
+                    {
+                        "order": 2,
+                        "code": "016452",
+                        "name": "南方纳斯达克100指数A",
+                        "short_name": "南方纳指100",
+                        "tracking_error_display": "1.42%",
+                        "tracking_display": "年化1.42% / 同类2.01% / 05-28",
+                        "limit_display": "200元",
+                        "amount": 50,
+                        "amount_display": "50元",
+                    },
+                ],
+            },
             "sections": [
                 {
                     "title": "可申购",
@@ -65,6 +99,24 @@ class ReportRendererTest(unittest.TestCase):
                         }
                     ],
                 },
+                {
+                    "title": "可申购",
+                    "groups": [
+                        {
+                            "title": "其他",
+                            "funds": [
+                                {
+                                    "code": "012920",
+                                    "name": "易方达全球成长精选混合(QDII)A",
+                                    "short_name": "易方达全球成长混合(QDII)",
+                                    "limit_display": "20元",
+                                    "status": "限大额",
+                                    "available": True,
+                                }
+                            ],
+                        }
+                    ],
+                },
             ],
             "fee_groups": [
                 {
@@ -99,6 +151,22 @@ class ReportRendererTest(unittest.TestCase):
                         }
                     ],
                 },
+                {
+                    "title": "其他",
+                    "funds": [
+                        {
+                            "code": "012920",
+                            "name": "易方达全球成长精选混合(QDII)A",
+                            "short_name": "易方达全球成长混合(QDII)",
+                            "operation_display": "管理1.20% 托管0.20% 销售0.00% 合计1.40%/年",
+                            "subscription_display": "<100万元 0.15%",
+                            "redemption_display": "<=6天 1.50% / >=730天 0.00%",
+                            "fee_error": "",
+                            "tracking_display": "",
+                            "tracking_fetch_error": "",
+                        }
+                    ],
+                },
             ],
         }
 
@@ -121,10 +189,11 @@ class ReportRendererTest(unittest.TestCase):
 
         self.assertEqual(
             [table["title"] for table in tables],
-            ["纳斯达克100", "标普500"],
+            ["纳斯达克100", "标普500", "其他"],
         )
         self.assertEqual(tables[0]["summary"], "可申购: 1 / 不可申购: 0")
         self.assertEqual(tables[1]["summary"], "可申购: 0 / 不可申购: 1")
+        self.assertEqual(tables[2]["summary"], "可申购: 1 / 不可申购: 0")
         self.assertEqual(
             tables[0]["rows"][0]["name"],
             "广发纳斯达克100ETF联接A(270042)",
@@ -148,6 +217,25 @@ class ReportRendererTest(unittest.TestCase):
         self.assertTrue(tables[1]["rows"][0]["tracking_error"])
         self.assertEqual(tables[1]["rows"][0]["operation"], "费率获取失败")
         self.assertEqual(tables[1]["rows"][0]["subscription"], "--")
+        self.assertEqual(
+            tables[2]["rows"][0]["name"],
+            "易方达全球成长精选混合(QDII)A(012920)",
+        )
+        self.assertEqual(tables[2]["rows"][0]["spread"], "可申购\n20元")
+
+    def test_investment_plan_rows_for_image_table(self):
+        rows = _investment_plan_rows(self._sample_report()["investment_plan"])
+
+        self.assertEqual(rows[0]["fund"], "大成纳指100(000834)")
+        self.assertEqual(rows[0]["tracking"], "1.03%")
+        self.assertEqual(rows[0]["limit"], "50元")
+        self.assertEqual(rows[0]["amount"], "50元")
+
+    def test_investment_plan_empty_state_uses_placeholder(self):
+        rows = _investment_plan_rows({"rows": []})
+
+        self.assertEqual(rows[0]["fund"], "暂无可执行计划")
+        self.assertTrue(rows[0]["placeholder"])
 
     def test_cell_wrapping_keeps_complete_copy(self):
         font = ImageFont.truetype(str(DEFAULT_FONT_PATH), size=17)
