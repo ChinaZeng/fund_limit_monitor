@@ -1,9 +1,9 @@
 {
     "notifiers": [
         {
-            "type": "gmail",
-            "address_env": "GMAIL_ADDRESS",
-            "app_password_env": "GMAIL_APP_PASSWORD"
+            "type": "qqmail",
+            "address_env": "QQ_EMAIL_ADDRESS",
+            "auth_code_env": "QQ_EMAIL_AUTH_CODE"
         }
     ],
     "investment_plan_amount": 100,

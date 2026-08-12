@@ -107,15 +107,16 @@ class WeChatNotifier(Notifier):
             return False
 
 
-class GmailNotifier(Notifier):
-    SMTP_HOST = "smtp.gmail.com"
+class SMTPEmailNotifier(Notifier):
+    SMTP_HOST = None
     SMTP_PORT = 465
+    PROVIDER_NAME = "SMTP"
     REPORT_CID = "fund-limit-report"
     requires_local_image = True
 
-    def __init__(self, address: str, app_password: str):
+    def __init__(self, address: str, credential: str):
         self.address = address.strip()
-        self.app_password = "".join(app_password.split())
+        self.credential = "".join(credential.split())
 
     def send(
         self,
@@ -130,7 +131,10 @@ class GmailNotifier(Notifier):
             try:
                 image_data = image_file.read_bytes()
             except OSError as e:
-                print(f"Failed to read Gmail report image '{image_file}': {e}")
+                print(
+                    f"Failed to read {self.PROVIDER_NAME} report image "
+                    f"'{image_file}': {e}"
+                )
                 return False
 
         email_message = self._build_message(
@@ -147,17 +151,20 @@ class GmailNotifier(Notifier):
                 context=ssl.create_default_context(),
                 timeout=10,
             ) as smtp:
-                smtp.login(self.address, self.app_password)
+                smtp.login(self.address, self.credential)
                 refused_recipients = smtp.send_message(email_message)
         except (OSError, smtplib.SMTPException) as e:
-            print(f"Failed to send Gmail notification: {e}")
+            print(f"Failed to send {self.PROVIDER_NAME} notification: {e}")
             return False
 
         if refused_recipients:
-            print(f"Gmail notification refused recipients: {refused_recipients}")
+            print(
+                f"{self.PROVIDER_NAME} notification refused recipients: "
+                f"{refused_recipients}"
+            )
             return False
 
-        print(f"Gmail notification sent to {self.address}.")
+        print(f"{self.PROVIDER_NAME} notification sent to {self.address}.")
         return True
 
     def _build_message(self, title, message, image_file=None, image_data=None):
@@ -188,6 +195,24 @@ class GmailNotifier(Notifier):
             )
 
         return email_message
+
+
+class QQMailNotifier(SMTPEmailNotifier):
+    SMTP_HOST = "smtp.qq.com"
+    PROVIDER_NAME = "QQ Mail"
+
+    def __init__(self, address: str, auth_code: str):
+        super().__init__(address, auth_code)
+        self.auth_code = self.credential
+
+
+class GmailNotifier(SMTPEmailNotifier):
+    SMTP_HOST = "smtp.gmail.com"
+    PROVIDER_NAME = "Gmail"
+
+    def __init__(self, address: str, app_password: str):
+        super().__init__(address, app_password)
+        self.app_password = self.credential
 
 
 class DingTalkNotifier(Notifier):
@@ -318,6 +343,9 @@ def _build_single_notifier(notifier_config):
 
     notifier_type = _normalize_notifier_type(notifier_config.get("type"))
 
+    if notifier_type == "qqmail":
+        return _build_qqmail_notifier(notifier_config)
+
     if notifier_type == "gmail":
         return _build_gmail_notifier(notifier_config)
 
@@ -355,6 +383,28 @@ def _build_gmail_notifier(notifier_config):
     print(
         "Warning: Gmail notifier requires environment variables "
         f"{address_env} and {app_password_env}. Skipping notifier."
+    )
+    return None
+
+
+def _build_qqmail_notifier(notifier_config):
+    address, address_env = _read_env(
+        notifier_config,
+        "address_env",
+        "QQ_EMAIL_ADDRESS",
+    )
+    auth_code, auth_code_env = _read_env(
+        notifier_config,
+        "auth_code_env",
+        "QQ_EMAIL_AUTH_CODE",
+    )
+
+    if _is_configured(address) and _is_configured(auth_code):
+        return QQMailNotifier(address, auth_code)
+
+    print(
+        "Warning: QQ Mail notifier requires environment variables "
+        f"{address_env} and {auth_code_env}. Skipping notifier."
     )
     return None
 

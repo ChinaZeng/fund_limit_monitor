@@ -42,8 +42,8 @@ jobs:
 
       - name: Send report
         env:
-          # 从保险箱取出个人 Gmail 地址和应用专用密码交给程序
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          # 从保险箱取出个人 QQ 邮箱地址和 SMTP 授权码交给程序
+          QQ_EMAIL_ADDRESS: ${{ secrets.QQ_EMAIL_ADDRESS }}
+          QQ_EMAIL_AUTH_CODE: ${{ secrets.QQ_EMAIL_AUTH_CODE }}
           TZ: Asia/Shanghai
         run: python monitor.py --send-report .report/latest.json
