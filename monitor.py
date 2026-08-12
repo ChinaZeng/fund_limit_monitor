@@ -1144,14 +1144,19 @@ class FundMonitor:
             payload["title"],
             payload["message"],
             image_url=payload.get("image_url"),
+            image_path=payload.get("image_path"),
         )
 
     def run(self):
-        payload = self.prepare_report(force_image=bool(self._report_image_base_url()))
+        force_image = bool(self._report_image_base_url()) or bool(
+            self.notifier.requires_local_image
+        )
+        payload = self.prepare_report(force_image=force_image)
         self.notifier.send(
             payload["title"],
             payload["message"],
             image_url=payload.get("image_url"),
+            image_path=payload.get("image_path"),
         )
 
     def _prepare_report_image(self, report, force_image=False):

@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from monitor import FundMonitor
 
@@ -605,6 +605,53 @@ class FundMonitorInvestmentPlanTest(unittest.TestCase):
 
         self.assertIn("## 纳指100定投计划【策略变更】", markdown)
         self.assertIn("【强提醒】定投策略较上期发生变化，请按新计划执行。", markdown)
+
+
+class FundMonitorNotificationTest(unittest.TestCase):
+    def test_send_report_payload_passes_image_url_and_path(self):
+        monitor = object.__new__(FundMonitor)
+        monitor.notifier = Mock()
+        monitor.notifier.send.return_value = True
+        payload = {
+            "title": "日报",
+            "message": "# 内容",
+            "image_url": "https://example.com/report.png",
+            "image_path": "reports/report.png",
+        }
+
+        with patch.object(monitor, "_load_json", return_value=payload):
+            result = monitor.send_report_payload(".report/latest.json")
+
+        self.assertTrue(result)
+        monitor.notifier.send.assert_called_once_with(
+            "日报",
+            "# 内容",
+            image_url="https://example.com/report.png",
+            image_path="reports/report.png",
+        )
+
+    def test_run_forces_and_passes_local_image_when_notifier_requires_it(self):
+        monitor = object.__new__(FundMonitor)
+        monitor.notifier = Mock(requires_local_image=True)
+        monitor.prepare_report = Mock(
+            return_value={
+                "title": "日报",
+                "message": "# 内容",
+                "image_url": None,
+                "image_path": "reports/report.png",
+            }
+        )
+        monitor._report_image_base_url = Mock(return_value="")
+
+        monitor.run()
+
+        monitor.prepare_report.assert_called_once_with(force_image=True)
+        monitor.notifier.send.assert_called_once_with(
+            "日报",
+            "# 内容",
+            image_url=None,
+            image_path="reports/report.png",
+        )
 
 
 if __name__ == "__main__":

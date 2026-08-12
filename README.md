@@ -1,6 +1,6 @@
 # Fund Limit Monitor (基金限额监控)
 
-此项目用于监控指定 QDII 基金（如纳斯达克 100、标普 500）的单日申购限额，并通过企业微信或钉钉机器人发送通知。
+此项目用于监控指定 QDII 基金（如纳斯达克 100、标普 500）的单日申购限额，并通过个人 Gmail 发送通知。
 
 ## 功能
 
@@ -10,14 +10,14 @@
 - 基于当日年化跟踪误差和申购限额，生成 100 元纳斯达克 100 定投分配计划。
 - 使用 SQLite 保存每日限额历史，并在限额变化时展示“旧值 -> 新值”。
 - 生成日报并通过抽象通知通道推送。
-- 支持企业微信 Markdown 机器人。
-- 支持钉钉 Markdown 机器人（加签模式），可发送图片版日报。
+- 默认通过个人 Gmail 发送正文内嵌图片版日报，并保留完整文本内容。
+- 保留企业微信 Markdown 和钉钉加签机器人作为兼容通知通道。
 
 ## 目录结构
 
 ```
 .
-├── config.json       # 配置文件 (需填入Webhook URL)
+├── config.json       # 通知通道和基金配置
 ├── monitor.py        # 主程序
 ├── notifier.py       # 通知通道实现
 ├── report_renderer.py # 图片日报渲染
@@ -38,28 +38,26 @@
 
    程序由 `config.json` 中的 `notifiers` 指定通知通道列表：
 
-   - `dingtalk`：钉钉机器人
-   - `wechat`：企业微信机器人
+   - `gmail`：个人 Gmail SMTP（默认）
+   - `dingtalk`：钉钉机器人（兼容）
+   - `wechat`：企业微信机器人（兼容）
    - `console`：仅打印到终端
 
-   程序会按列表顺序逐个发送，同一条日报可以同时推送到多个群。某个通知配置不完整时只跳过该项，不影响其他通知。
+   程序会按列表顺序逐个发送，同一条日报可以同时推送到多个目标。某个通知配置不完整时只跳过该项，不影响其他通知。
 
-   `webhook_url`、`secret` 等敏感值只从环境变量读取，`config.json` 只保存环境变量名。
-   默认 `config.json` 已声明钉钉和企业微信；是否实际发送取决于对应环境变量是否有值。
+   Gmail 地址、应用专用密码、Webhook 和签名密钥等值只从环境变量读取，`config.json` 只保存环境变量名。默认 `config.json` 只声明 Gmail；未提供完整 Gmail 凭据时，程序会把报告打印到终端。
 
-   **多个通知通道**
+   **个人 Gmail**
+
+   Gmail 发件地址同时也是收件地址。先在 Google 账号中启用两步验证，再创建名为 `Fund Limit Monitor` 的 16 位应用专用密码。不要使用 Gmail 登录密码，也不要把应用专用密码写入仓库。
 
    ```json
    {
        "notifiers": [
            {
-               "type": "dingtalk",
-               "webhook_url_env": "DINGTALK_WEBHOOK_URL",
-               "secret_env": "DINGTALK_SECRET"
-           },
-           {
-               "type": "wechat",
-               "webhook_url_env": "WEBHOOK_URL"
+               "type": "gmail",
+               "address_env": "GMAIL_ADDRESS",
+               "app_password_env": "GMAIL_APP_PASSWORD"
            }
        ],
        "investment_plan_amount": 100,
@@ -69,44 +67,27 @@
    }
    ```
 
-   **钉钉机器人**
-
-   钉钉群机器人启用“加签”安全设置后，配置：
-
-   ```json
-   {
-       "notifiers": [
-           {
-               "type": "dingtalk",
-               "webhook_url_env": "DINGTALK_WEBHOOK_URL",
-               "secret_env": "DINGTALK_SECRET"
-           }
-       ],
-       "funds": [
-           ...
-       ]
-   }
-   ```
-
-   然后通过环境变量或 GitHub Secrets 提供真实值：
-
    ```bash
-   export DINGTALK_WEBHOOK_URL="https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN"
-   export DINGTALK_SECRET="SECxxxxxxxxxxxxxxxx"
+   export GMAIL_ADDRESS="your-name@gmail.com"
+   export GMAIL_APP_PASSWORD="abcdefghijklmnop"
    ```
 
-   如果不配置 `webhook_url_env` 和 `secret_env`，默认读取 `DINGTALK_WEBHOOK_URL` 和 `DINGTALK_SECRET`。
+   如果不配置环境变量名，默认读取 `GMAIL_ADDRESS` 和 `GMAIL_APP_PASSWORD`。应用专用密码中即使包含显示用空格，程序也会在认证前自动移除。
 
-   **钉钉图片日报**
+   程序固定使用 `smtp.gmail.com:465` 和 SSL，不需要配置 SMTP 主机或端口。
 
-   钉钉自定义 Webhook 机器人通过 Markdown 展示图片，因此图片必须先有公网 URL。本项目默认将 PNG 保存到 `reports/`，GitHub Actions 会提交后再发送钉钉消息：
+   **Gmail 图片日报**
+
+   Gmail 邮件会直接读取本地 PNG，以 CID 图片形式显示在 HTML 正文中；完整 Markdown 报告作为纯文本降级内容。指定的图片不存在或不可读时，邮件发送失败并让 CI 报错。
+
+   本项目继续将 PNG 保存到 `reports/` 并由 GitHub Actions 公开归档：
 
    ```bash
    export REPORT_IMAGE_BASE_URL="https://raw.githubusercontent.com/OWNER/REPO/main/reports"
    export REPORT_IMAGE_DIR="reports"
    ```
 
-   如果未配置 `REPORT_IMAGE_BASE_URL`，`python3 monitor.py` 会保持纯 Markdown 通知；`--prepare-report` 仍会生成本地 PNG，但 payload 中不会附带公网图片 URL。
+   Gmail 发送只依赖 payload 中的本地 `image_path`，不依赖 `REPORT_IMAGE_BASE_URL`；该 URL 继续用于公开归档链接和兼容通知通道。直接运行 `python3 monitor.py` 时，Gmail 通知器也会自动生成本地 PNG。
 
    图片渲染默认使用项目内置字体 `assets/fonts/FundReportSans-Subset.otf`。如需替换字体：
 
@@ -143,7 +124,7 @@
    日报会单独生成“纳指100定投计划”表，金额由 `config.json` 的 `investment_plan_amount` 配置，默认 100 元。规则为：只选择纳斯达克 100 基金中当前可申购且有年化跟踪误差数据的品种，按年化跟踪误差从低到高排序；每只基金最多投到当日申购限额，额度不够时继续选择下一只，直到配置金额用完或没有可执行基金。
    程序会把最终执行计划保存到 `history.db`，并在下次生成日报时比较“顺序、基金代码、定投金额”。若任一项发生变化，Markdown 和图片日报都会在“纳指100定投计划”表头显示“策略变更”强提醒；首次没有历史基线时只保存当前计划，不提醒。
 
-   **企业微信机器人**
+   **兼容通道：企业微信**
 
    ```json
    {
@@ -159,30 +140,23 @@
    }
    ```
 
-   然后通过环境变量或 GitHub Secrets 提供真实值：
-
    ```bash
    export WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
    ```
 
    如果不配置 `webhook_url_env`，默认读取 `WEBHOOK_URL`。
 
-   **多个同类机器人**
+   **兼容通道：钉钉**
 
-   多个钉钉或企业微信机器人需要使用不同的环境变量名：
+   钉钉加签机器人仍然可用，但不再出现在默认配置和 GitHub Actions 中：
 
    ```json
    {
        "notifiers": [
            {
                "type": "dingtalk",
-               "webhook_url_env": "DINGTALK_WEBHOOK_URL_A",
-               "secret_env": "DINGTALK_SECRET_A"
-           },
-           {
-               "type": "dingtalk",
-               "webhook_url_env": "DINGTALK_WEBHOOK_URL_B",
-               "secret_env": "DINGTALK_SECRET_B"
+               "webhook_url_env": "DINGTALK_WEBHOOK_URL",
+               "secret_env": "DINGTALK_SECRET"
            }
        ],
        "funds": [
@@ -190,6 +164,13 @@
        ]
    }
    ```
+
+   ```bash
+   export DINGTALK_WEBHOOK_URL="https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN"
+   export DINGTALK_SECRET="SECxxxxxxxxxxxxxxxx"
+   ```
+
+   同一个 `notifiers` 数组也可以配置多个通道；程序会按列表顺序逐一发送。多个同类机器人应分别使用不同的环境变量名。
 
    **终端打印**
 
@@ -218,7 +199,7 @@
 python3 monitor.py
 ```
 
-正常情况下，您会在终端看到输出（如果没有配置 Webhook），或者在钉钉群/企业微信群收到消息。
+正常情况下，您会在配置的 Gmail 收件箱收到来自自己的日报邮件；如果凭据未配置完整，报告会打印到终端。
 
 **两阶段生成并发送：**
 
@@ -227,7 +208,7 @@ python3 monitor.py --prepare-report --report-output .report/latest.json
 python3 monitor.py --send-report .report/latest.json
 ```
 
-该模式适合 CI：先生成并提交 `reports/*.png` 和 `history.db`，让图片 URL 生效后，再发送钉钉消息。
+该模式适合 CI：先生成并提交 `reports/*.png` 和 `history.db`，再把同一张本地 PNG 内嵌到 Gmail 邮件中发送。
 
 **重新生成字体子集：**
 
@@ -252,12 +233,14 @@ python3 -m py_compile monitor.py notifier.py report_renderer.py test_notifier.py
 
 它可以手动触发（Workflow dispatch），也会在每天北京时间 13:30 (UTC 05:30) 自动运行。
 
-如需在 GitHub Actions 使用钉钉通知，请先在 `config.json` 的 `notifiers` 中添加 `dingtalk` 项，再在仓库 Settings -> Secrets and variables -> Actions 中添加：
+先为个人 Google 账号启用两步验证，并在 [Google 应用专用密码](https://support.google.com/mail/answer/185833) 页面创建 `Fund Limit Monitor` 密码。Gmail SMTP 使用 `smtp.gmail.com`、465 和 SSL，配置依据见 [Google SMTP 文档](https://support.google.com/a/answer/176600)。
 
-- `DINGTALK_WEBHOOK_URL`
-- `DINGTALK_SECRET`
+然后在仓库 **Settings -> Secrets and variables -> Actions** 中添加：
 
-如需使用企业微信通知，请在 `notifiers` 中添加 `wechat` 项，并添加 Secret `WEBHOOK_URL`。
+- `GMAIL_ADDRESS`：完整个人 Gmail 地址
+- `GMAIL_APP_PASSWORD`：16 位应用专用密码，不是 Gmail 登录密码
+
+工作流只读取这两个 Gmail Secret，不再读取其他通知通道凭据。添加后建议通过 **Workflow dispatch** 手动触发一次，确认邮件发件人和收件人相同，正文显示完整日报图片，并可查看纯文本降级内容。
 
 ## 注意事项
 

@@ -1,9 +1,14 @@
 import base64
 import hashlib
 import hmac
+import html
 import os
+import smtplib
+import ssl
 import time
 from abc import ABC, abstractmethod
+from email.message import EmailMessage
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -11,17 +16,33 @@ import requests
 
 
 class Notifier(ABC):
+    requires_local_image = False
+
     @abstractmethod
-    def send(self, title: str, message: str, image_url: Optional[str] = None) -> bool:
+    def send(
+        self,
+        title: str,
+        message: str,
+        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
+    ) -> bool:
         """Send a notification and return whether the request succeeded."""
 
 
 class ConsoleNotifier(Notifier):
-    def send(self, title: str, message: str, image_url: Optional[str] = None) -> bool:
+    def send(
+        self,
+        title: str,
+        message: str,
+        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
+    ) -> bool:
         print("Printing notification to console.")
         print(f"Title: {title}")
         if image_url:
             print(f"Image: {image_url}")
+        elif image_path:
+            print(f"Image: {image_path}")
         print(message)
         return True
 
@@ -30,10 +51,27 @@ class MultiNotifier(Notifier):
     def __init__(self, notifiers):
         self.notifiers = notifiers
 
-    def send(self, title: str, message: str, image_url: Optional[str] = None) -> bool:
+    @property
+    def requires_local_image(self):
+        return any(notifier.requires_local_image for notifier in self.notifiers)
+
+    def send(
+        self,
+        title: str,
+        message: str,
+        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
+    ) -> bool:
         results = []
         for notifier in self.notifiers:
-            results.append(notifier.send(title, message, image_url=image_url))
+            results.append(
+                notifier.send(
+                    title,
+                    message,
+                    image_url=image_url,
+                    image_path=image_path,
+                )
+            )
         return all(results)
 
 
@@ -41,7 +79,13 @@ class WeChatNotifier(Notifier):
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
 
-    def send(self, title: str, message: str, image_url: Optional[str] = None) -> bool:
+    def send(
+        self,
+        title: str,
+        message: str,
+        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
+    ) -> bool:
         data = {
             "msgtype": "markdown",
             "markdown": {"content": message},
@@ -63,12 +107,101 @@ class WeChatNotifier(Notifier):
             return False
 
 
+class GmailNotifier(Notifier):
+    SMTP_HOST = "smtp.gmail.com"
+    SMTP_PORT = 465
+    REPORT_CID = "fund-limit-report"
+    requires_local_image = True
+
+    def __init__(self, address: str, app_password: str):
+        self.address = address.strip()
+        self.app_password = "".join(app_password.split())
+
+    def send(
+        self,
+        title: str,
+        message: str,
+        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
+    ) -> bool:
+        image_file = Path(image_path) if image_path else None
+        image_data = None
+        if image_file:
+            try:
+                image_data = image_file.read_bytes()
+            except OSError as e:
+                print(f"Failed to read Gmail report image '{image_file}': {e}")
+                return False
+
+        email_message = self._build_message(
+            title,
+            message,
+            image_file=image_file,
+            image_data=image_data,
+        )
+
+        try:
+            with smtplib.SMTP_SSL(
+                self.SMTP_HOST,
+                self.SMTP_PORT,
+                context=ssl.create_default_context(),
+                timeout=10,
+            ) as smtp:
+                smtp.login(self.address, self.app_password)
+                refused_recipients = smtp.send_message(email_message)
+        except (OSError, smtplib.SMTPException) as e:
+            print(f"Failed to send Gmail notification: {e}")
+            return False
+
+        if refused_recipients:
+            print(f"Gmail notification refused recipients: {refused_recipients}")
+            return False
+
+        print(f"Gmail notification sent to {self.address}.")
+        return True
+
+    def _build_message(self, title, message, image_file=None, image_data=None):
+        email_message = EmailMessage()
+        email_message["Subject"] = title
+        email_message["From"] = self.address
+        email_message["To"] = self.address
+        email_message.set_content(message)
+
+        if image_file and image_data is not None:
+            escaped_title = html.escape(title)
+            email_message.add_alternative(
+                "<html><body>"
+                f"<h1>{escaped_title}</h1>"
+                f'<img src="cid:{self.REPORT_CID}" alt="{escaped_title}" '
+                'style="max-width: 100%; height: auto;">'
+                "</body></html>",
+                subtype="html",
+            )
+            html_part = email_message.get_payload()[-1]
+            html_part.add_related(
+                image_data,
+                maintype="image",
+                subtype="png",
+                cid=f"<{self.REPORT_CID}>",
+                filename=image_file.name,
+                disposition="inline",
+            )
+
+        return email_message
+
+
 class DingTalkNotifier(Notifier):
     def __init__(self, webhook_url: str, secret: str):
         self.webhook_url = webhook_url
         self.secret = secret
 
-    def send(self, title: str, message: str, image_url: Optional[str] = None) -> bool:
+    def send(
+        self,
+        title: str,
+        message: str,
+        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
+    ) -> bool:
         if image_url:
             message = f"## {title}\n\n![{title}]({image_url})\n\n[查看原图]({image_url})"
 
@@ -185,6 +318,9 @@ def _build_single_notifier(notifier_config):
 
     notifier_type = _normalize_notifier_type(notifier_config.get("type"))
 
+    if notifier_type == "gmail":
+        return _build_gmail_notifier(notifier_config)
+
     if notifier_type == "dingtalk":
         return _build_dingtalk_notifier(notifier_config)
 
@@ -197,6 +333,28 @@ def _build_single_notifier(notifier_config):
     print(
         f"Warning: Unsupported notifier type '{notifier_config.get('type')}'. "
         "Skipping notifier."
+    )
+    return None
+
+
+def _build_gmail_notifier(notifier_config):
+    address, address_env = _read_env(
+        notifier_config,
+        "address_env",
+        "GMAIL_ADDRESS",
+    )
+    app_password, app_password_env = _read_env(
+        notifier_config,
+        "app_password_env",
+        "GMAIL_APP_PASSWORD",
+    )
+
+    if _is_configured(address) and _is_configured(app_password):
+        return GmailNotifier(address, app_password)
+
+    print(
+        "Warning: Gmail notifier requires environment variables "
+        f"{address_env} and {app_password_env}. Skipping notifier."
     )
     return None
 

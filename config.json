@@ -1,13 +1,9 @@
 {
     "notifiers": [
         {
-            "type": "dingtalk",
-            "webhook_url_env": "DINGTALK_WEBHOOK_URL",
-            "secret_env": "DINGTALK_SECRET"
-        },
-        {
-            "type": "wechat",
-            "webhook_url_env": "WEBHOOK_URL"
+            "type": "gmail",
+            "address_env": "GMAIL_ADDRESS",
+            "app_password_env": "GMAIL_APP_PASSWORD"
         }
     ],
     "investment_plan_amount": 100,

@@ -1,17 +1,123 @@
 import base64
 import hashlib
 import hmac
+import smtplib
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, quote_plus, urlsplit
 
 from notifier import (
     ConsoleNotifier,
     DingTalkNotifier,
+    GmailNotifier,
     MultiNotifier,
     WeChatNotifier,
     build_notifier,
 )
+
+
+class GmailNotifierTest(unittest.TestCase):
+    def _smtp_client(self, smtp_ssl):
+        smtp = smtp_ssl.return_value.__enter__.return_value
+        smtp.send_message.return_value = {}
+        return smtp
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    def test_sends_inline_png_with_plain_text_fallback(self, smtp_ssl):
+        smtp = self._smtp_client(smtp_ssl)
+        notifier = GmailNotifier("me@gmail.com", "abcd efgh ijkl mnop")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "基金日报.png"
+            image_path.write_bytes(b"PNG DATA")
+
+            with patch("builtins.print"):
+                result = notifier.send(
+                    "基金申购限额日报",
+                    "# 完整报告\n\n中文内容",
+                    image_path=str(image_path),
+                )
+
+        self.assertTrue(result)
+        smtp_ssl.assert_called_once()
+        self.assertEqual(smtp_ssl.call_args.args, ("smtp.gmail.com", 465))
+        self.assertEqual(smtp_ssl.call_args.kwargs["timeout"], 10)
+        self.assertIn("context", smtp_ssl.call_args.kwargs)
+        smtp.login.assert_called_once_with("me@gmail.com", "abcdefghijklmnop")
+
+        email_message = smtp.send_message.call_args.args[0]
+        self.assertEqual(email_message["Subject"], "基金申购限额日报")
+        self.assertEqual(email_message["From"], "me@gmail.com")
+        self.assertEqual(email_message["To"], "me@gmail.com")
+        self.assertEqual(email_message.get_content_type(), "multipart/alternative")
+
+        plain_part, related_part = email_message.get_payload()
+        self.assertEqual(plain_part.get_content_type(), "text/plain")
+        self.assertIn("# 完整报告", plain_part.get_content())
+        self.assertIn("中文内容", plain_part.get_content())
+        self.assertEqual(related_part.get_content_type(), "multipart/related")
+
+        html_part, image_part = related_part.get_payload()
+        self.assertEqual(html_part.get_content_type(), "text/html")
+        self.assertIn('src="cid:fund-limit-report"', html_part.get_content())
+        self.assertIn("基金申购限额日报", html_part.get_content())
+        self.assertEqual(image_part.get_content_type(), "image/png")
+        self.assertEqual(image_part.get_payload(decode=True), b"PNG DATA")
+        self.assertEqual(image_part["Content-ID"], "<fund-limit-report>")
+        self.assertEqual(image_part.get_content_disposition(), "inline")
+        self.assertEqual(image_part.get_filename(), "基金日报.png")
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    def test_sends_plain_text_when_image_path_is_not_provided(self, smtp_ssl):
+        smtp = self._smtp_client(smtp_ssl)
+        notifier = GmailNotifier("me@gmail.com", "APP_PASSWORD")
+        message = "# 日报\n\n| 基金 | 限额 |"
+
+        with patch("builtins.print"):
+            result = notifier.send("日报", message)
+
+        self.assertTrue(result)
+        email_message = smtp.send_message.call_args.args[0]
+        self.assertEqual(email_message.get_content_type(), "text/plain")
+        self.assertEqual(email_message.get_content().rstrip(), message)
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    def test_missing_image_returns_false_without_connecting(self, smtp_ssl):
+        notifier = GmailNotifier("me@gmail.com", "APP_PASSWORD")
+
+        with patch("builtins.print"):
+            result = notifier.send(
+                "日报",
+                "内容",
+                image_path="/missing/fund-limit.png",
+            )
+
+        self.assertFalse(result)
+        smtp_ssl.assert_not_called()
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    def test_refused_recipient_returns_false(self, smtp_ssl):
+        smtp = self._smtp_client(smtp_ssl)
+        smtp.send_message.return_value = {"me@gmail.com": (550, b"rejected")}
+        notifier = GmailNotifier("me@gmail.com", "APP_PASSWORD")
+
+        with patch("builtins.print"):
+            result = notifier.send("日报", "内容")
+
+        self.assertFalse(result)
+
+    @patch("notifier.smtplib.SMTP_SSL")
+    def test_smtp_error_returns_false(self, smtp_ssl):
+        smtp = self._smtp_client(smtp_ssl)
+        smtp.login.side_effect = smtplib.SMTPAuthenticationError(535, b"bad auth")
+        notifier = GmailNotifier("me@gmail.com", "APP_PASSWORD")
+
+        with patch("builtins.print"):
+            result = notifier.send("日报", "内容")
+
+        self.assertFalse(result)
 
 
 class DingTalkNotifierTest(unittest.TestCase):
@@ -133,32 +239,117 @@ class MultiNotifierTest(unittest.TestCase):
         result = notifier.send("日报", "# 内容")
 
         self.assertFalse(result)
-        first.send.assert_called_once_with("日报", "# 内容", image_url=None)
-        second.send.assert_called_once_with("日报", "# 内容", image_url=None)
+        first.send.assert_called_once_with(
+            "日报",
+            "# 内容",
+            image_url=None,
+            image_path=None,
+        )
+        second.send.assert_called_once_with(
+            "日报",
+            "# 内容",
+            image_url=None,
+            image_path=None,
+        )
 
-    def test_passes_image_url_to_all_notifiers(self):
+    def test_passes_image_url_and_path_to_all_notifiers(self):
         first = Mock()
         first.send.return_value = True
         second = Mock()
         second.send.return_value = True
         notifier = MultiNotifier([first, second])
 
-        result = notifier.send("日报", "# 内容", image_url="https://example.com/a.png")
+        result = notifier.send(
+            "日报",
+            "# 内容",
+            image_url="https://example.com/a.png",
+            image_path="reports/a.png",
+        )
 
         self.assertTrue(result)
         first.send.assert_called_once_with(
             "日报",
             "# 内容",
             image_url="https://example.com/a.png",
+            image_path="reports/a.png",
         )
         second.send.assert_called_once_with(
             "日报",
             "# 内容",
             image_url="https://example.com/a.png",
+            image_path="reports/a.png",
         )
+
+    def test_requires_local_image_when_any_notifier_requires_it(self):
+        first = Mock(requires_local_image=False)
+        second = Mock(requires_local_image=True)
+
+        notifier = MultiNotifier([first, second])
+
+        self.assertTrue(notifier.requires_local_image)
 
 
 class BuildNotifierTest(unittest.TestCase):
+    @patch.dict(
+        "os.environ",
+        {
+            "GMAIL_ADDRESS": "me@gmail.com",
+            "GMAIL_APP_PASSWORD": "abcd efgh ijkl mnop",
+        },
+        clear=True,
+    )
+    def test_default_environment_values_are_used_for_configured_gmail_notifier(self):
+        notifier = build_notifier({"notifier": {"type": "gmail"}})
+
+        self.assertIsInstance(notifier, GmailNotifier)
+        self.assertEqual(notifier.address, "me@gmail.com")
+        self.assertEqual(notifier.app_password, "abcdefghijklmnop")
+
+    @patch.dict(
+        "os.environ",
+        {
+            "FUND_REPORT_GMAIL_ADDRESS": "custom@gmail.com",
+            "FUND_REPORT_GMAIL_PASSWORD": "CUSTOM_PASSWORD",
+        },
+        clear=True,
+    )
+    def test_custom_environment_variable_names_are_used_for_gmail_notifier(self):
+        notifier = build_notifier(
+            {
+                "notifier": {
+                    "type": "gmail",
+                    "address_env": "FUND_REPORT_GMAIL_ADDRESS",
+                    "app_password_env": "FUND_REPORT_GMAIL_PASSWORD",
+                }
+            }
+        )
+
+        self.assertIsInstance(notifier, GmailNotifier)
+        self.assertEqual(notifier.address, "custom@gmail.com")
+        self.assertEqual(notifier.app_password, "CUSTOM_PASSWORD")
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("builtins.print")
+    def test_returns_console_when_selected_gmail_config_is_missing(self, _print):
+        notifier = build_notifier({"notifier": {"type": "gmail"}})
+
+        self.assertIsInstance(notifier, ConsoleNotifier)
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("builtins.print")
+    def test_does_not_read_gmail_credentials_from_config(self, _print):
+        notifier = build_notifier(
+            {
+                "notifier": {
+                    "type": "gmail",
+                    "address": "inline@gmail.com",
+                    "app_password": "INLINE_PASSWORD",
+                }
+            }
+        )
+
+        self.assertIsInstance(notifier, ConsoleNotifier)
+
     @patch.dict(
         "os.environ",
         {
