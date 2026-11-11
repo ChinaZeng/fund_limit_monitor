@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
+
 from monitor import FundMonitor
 
 
@@ -374,6 +376,47 @@ class FundMonitorTrackingTest(unittest.TestCase):
             funds_data[0]["tracking_display"],
             "年化1.11% / 同类2.01% / 05-28",
         )
+
+
+class FundMonitorRetryTest(unittest.TestCase):
+    def setUp(self):
+        self.monitor = make_monitor()
+
+    @patch("monitor.time.sleep")
+    @patch("monitor.requests.get")
+    def test_fetch_retries_timeouts_then_succeeds(self, get, sleep):
+        ok = Mock(
+            status_code=200,
+            text="<p>交易状态：开放申购</p>\n<p>（单日累计购买上限100元）</p>",
+        )
+        get.side_effect = [
+            requests.ReadTimeout("read timed out"),
+            requests.ConnectionError("connection reset"),
+            ok,
+        ]
+
+        info = self.monitor.fetch_fund_info("270042", "广发纳斯达克100ETF联接A")
+
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(info["status"], "开放申购")
+        self.assertEqual(info["limit_text"], "100元")
+
+    @patch("monitor.time.sleep")
+    @patch("monitor.requests.get", side_effect=requests.ReadTimeout("timeout"))
+    def test_fetch_gives_up_after_retries(self, get, _sleep):
+        info = self.monitor.fetch_fund_info("270042", "广发纳斯达克100ETF联接A")
+
+        self.assertEqual(get.call_count, FundMonitor.REQUEST_RETRIES + 1)
+        self.assertEqual(info["status"], "Unknown")
+
+    @patch("monitor.time.sleep")
+    @patch("monitor.requests.get", side_effect=Exception("unexpected"))
+    def test_fetch_does_not_retry_non_network_errors(self, get, sleep):
+        self.monitor.fetch_fund_tracking_info("270042")
+
+        self.assertEqual(get.call_count, 1)
+        sleep.assert_not_called()
 
 
 class FundMonitorInvestmentPlanTest(unittest.TestCase):

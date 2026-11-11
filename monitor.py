@@ -27,6 +27,9 @@ class FundMonitor:
             "Chrome/91.0.4472.114 Safari/537.36"
         )
     }
+    REQUEST_TIMEOUT = 10
+    REQUEST_RETRIES = 2
+    REQUEST_RETRY_BACKOFF = 2
 
     def __init__(self):
         self.config = self._load_json(self.CONFIG_FILE)
@@ -369,6 +372,25 @@ class FundMonitor:
             return "标普500"
         return "其他"
 
+    def _http_get(self, url):
+        """GET that retries transient network errors (timeouts, dropped connections)."""
+        for attempt in range(self.REQUEST_RETRIES + 1):
+            try:
+                return requests.get(
+                    url,
+                    headers=self.REQUEST_HEADERS,
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+            except (requests.Timeout, requests.ConnectionError) as e:
+                if attempt == self.REQUEST_RETRIES:
+                    raise
+                delay = self.REQUEST_RETRY_BACKOFF * (attempt + 1)
+                print(
+                    f"Retrying {url} in {delay}s "
+                    f"({attempt + 1}/{self.REQUEST_RETRIES}): {e}"
+                )
+                time.sleep(delay)
+
     def fetch_fund_info(self, code, name):
         url = f"http://fund.eastmoney.com/f10/jbgk_{code}.html"
 
@@ -381,7 +403,7 @@ class FundMonitor:
         }
 
         try:
-            resp = requests.get(url, headers=self.REQUEST_HEADERS, timeout=10)
+            resp = self._http_get(url)
             resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -424,7 +446,7 @@ class FundMonitor:
         url = f"https://fundf10.eastmoney.com/jjfl_{code}.html"
 
         try:
-            resp = requests.get(url, headers=self.REQUEST_HEADERS, timeout=10)
+            resp = self._http_get(url)
             if resp.status_code >= 400:
                 raise ValueError(f"HTTP {resp.status_code}")
             resp.encoding = "utf-8"
@@ -437,7 +459,7 @@ class FundMonitor:
         url = f"https://fundf10.eastmoney.com/tsdata_{code}.html"
 
         try:
-            resp = requests.get(url, headers=self.REQUEST_HEADERS, timeout=10)
+            resp = self._http_get(url)
             if resp.status_code >= 400:
                 raise ValueError(f"HTTP {resp.status_code}")
             resp.encoding = "utf-8"
